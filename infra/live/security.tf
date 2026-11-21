@@ -41,11 +41,11 @@ resource "aws_security_group" "platform" {
   vpc_id      = data.aws_vpc.default.id
 
   ingress {
-    description     = "MLflow from app host"
+    description     = "MLflow from app host and notebook"
     from_port       = 5000
     to_port         = 5000
     protocol        = "tcp"
-    security_groups = [aws_security_group.app.id]
+    security_groups = [aws_security_group.app.id, module.notebook.security_group_id]
   }
 
   egress {

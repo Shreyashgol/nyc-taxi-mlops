@@ -1,0 +1,52 @@
+# CD (S0): deploy the newly built app container onto the app host via self-hosted runner.
+name: cd
+
+on:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cd
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: |
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.head_repository.full_name == github.repository &&
+        github.event.workflow_run.conclusion == 'success'))
+    runs-on: [self-hosted, lab-app]
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: docker/login-action@v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Deploy app stack
+        env:
+          TARGET_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          export IMAGE_PREFIX="ghcr.io/${GITHUB_REPOSITORY,,}"
+          export IMAGE_TAG="sha-${TARGET_SHA::7}"
+          docker compose -f deploy/compose.app.yaml pull
+          docker compose -f deploy/compose.app.yaml up -d --wait
+      - name: Smoke test
+        run: |
+          echo "Verifying /version..."
+          v=$(curl -fsS --retry 10 --retry-delay 2 http://localhost:80/version)
+          echo "Response: $v"
+          echo "Verifying /predict..."
+          p=$(curl -fsS -X POST http://localhost:80/predict -H 'Content-Type: application/json' \
+            -d '{"pickup_zone_id": 132, "dropoff_zone_id": 230, "pickup_datetime": "2024-03-08T17:05:00"}')
+          echo "Response: $p"

@@ -39,7 +39,7 @@ def training_set(
     redshift: RedshiftData, artifacts: ArtifactBucket
 ) -> dg.MaterializeResult:
     """UNLOAD staging.trip_features for the training window and holdout to the artifact bucket."""
-    months_str = ", ".join(f"'{m}'" for m in TRAINING_MONTHS)
+    months_str = ", ".join(f"''{m}''" for m in TRAINING_MONTHS)
 
     # UNLOAD training window
     redshift.execute(
@@ -52,7 +52,7 @@ def training_set(
     # UNLOAD holdout
     redshift.execute(
         f"unload ('select pickup_zone_id, dropoff_zone_id, pickup_hour, pickup_dow, duration_min "
-        f"from staging.trip_features where trip_month = \\'{HOLDOUT_MONTH}\\'') "
+        f"from staging.trip_features where trip_month = ''{HOLDOUT_MONTH}''') "
         f"to '{artifacts.uri('datasets/holdout/')}' "
         "iam_role default format as parquet cleanpath"
     )

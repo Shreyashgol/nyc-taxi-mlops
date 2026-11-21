@@ -15,13 +15,13 @@ from .raw_trips import raw_trips
 from .staging import stg_trips
 from .trip_files import trip_files
 
-ingest_job = dg.define_asset_job(
-    "ingest_job",
+ingest_month = dg.define_asset_job(
+    "ingest_month",
     selection=dg.AssetSelection.assets(trip_files, raw_trips, stg_trips, zone_hour_stats),
 )
 
 
-@dg.sensor(job=ingest_job, minimum_interval_seconds=60)
+@dg.sensor(job=ingest_month, minimum_interval_seconds=60)
 def trips_sensor(context: dg.SensorEvaluationContext, data_bucket: DataBucket):
     seen = set(json.loads(context.cursor or "[]"))
     found = {f.month: f for f in data_bucket.trip_files()}

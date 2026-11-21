@@ -39,12 +39,13 @@ def training_set(
     redshift: RedshiftData, artifacts: ArtifactBucket
 ) -> dg.MaterializeResult:
     """UNLOAD staging.trip_features for the training window and holdout to the artifact bucket."""
-    months_str = ", ".join(f"''{m}''" for m in TRAINING_MONTHS)
+    unload_months = ", ".join(f"''{m}''" for m in TRAINING_MONTHS)
+    query_months = ", ".join(f"'{m}'" for m in TRAINING_MONTHS)
 
     # UNLOAD training window
     redshift.execute(
         f"unload ('select pickup_zone_id, dropoff_zone_id, pickup_hour, pickup_dow, duration_min "
-        f"from staging.trip_features where trip_month in ({months_str})') "
+        f"from staging.trip_features where trip_month in ({unload_months})') "
         f"to '{artifacts.uri('datasets/train/')}' "
         "iam_role default format as parquet cleanpath"
     )
@@ -61,7 +62,7 @@ def training_set(
     redshift.execute(
         f"unload ('select pickup_zone_id, dropoff_zone_id, "
         f"percentile_cont(0.5) within group (order by trip_distance) as est_distance_miles "
-        f"from staging.stg_trips where trip_month in ({months_str}) "
+        f"from staging.stg_trips where trip_month in ({unload_months}) "
         f"and trip_distance > 0 and trip_distance < 100 "
         f"and pickup_zone_id between 1 and 263 and dropoff_zone_id between 1 and 263 "
         f"group by pickup_zone_id, dropoff_zone_id') "
@@ -70,7 +71,7 @@ def training_set(
     )
 
     train_rows = redshift.scalar(
-        f"select count(*) from staging.trip_features where trip_month in ({months_str})"
+        f"select count(*) from staging.trip_features where trip_month in ({query_months})"
     )
     holdout_rows = redshift.scalar(
         f"select count(*) from staging.trip_features where trip_month = '{HOLDOUT_MONTH}'"

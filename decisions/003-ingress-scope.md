@@ -4,16 +4,16 @@ Stage: S0 · Date: 2026-11-21 · Author: student · Drafted by agent: yes
 
 ## Choice
 
-Permit inbound HTTP traffic to the app host (Traefik, port 80) from anywhere on the internet (`0.0.0.0/0`).
+Restrict inbound HTTP traffic to the app host (Traefik, port 80) exclusively to the student's personal public IP address (`115.244.141.202/32`).
 
 ## Rejected alternative
 
-Restricting inbound port 80 traffic to a fixed set of developer/student IP addresses (`<ip>/32`).
+Opening port 80 to the entire public internet (`0.0.0.0/0`).
 
 ## Why
 
-In a learner and testing environment, client IP addresses frequently change due to dynamic ISP allocations, VPN usage, and campus Wi-Fi shifts. Furthermore, automated grading scripts and health monitoring systems access the application from varying external IPs. Restricting CIDRs would lead to connectivity failures and false-negative grading runs without providing meaningful additional security in an ephemeral lab sandbox.
+Following the principle of least privilege and network defense-in-depth, services under development should not be exposed to arbitrary external probes, scanners, or denial-of-service traffic from the public internet. Restricting ingress strictly to the student's current public IP prevents unauthorized access while allowing the student full capability to test and interact with the service.
 
 ## What would show this was wrong
 
-If unauthenticated external traffic results in resource exhaustion or denial of service on the EC2 host, or if course security policies mandate strict IP allowlisting.
+If changes in network location (e.g., roaming to mobile data, campus Wi-Fi, or VPN) or automated external grading runners from unpredictable IP pools fail to reach the app host due to blocked traffic.

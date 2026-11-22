@@ -1,0 +1,133 @@
+# Promote (S3): move a challenger model to champion with human approval.
+# The production environment requires a reviewer to approve before the job runs.
+name: promote
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Model version to promote (leave empty for current challenger)"
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: promote
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    runs-on: [self-hosted, lab-app]
+    environment: production
+    permissions:
+      contents: read
+      packages: read
+    env:
+      MLFLOW_TRACKING_URI: ${{ vars.MLFLOW_TRACKING_URI }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+      AWS_REGION: us-east-1
+    steps:
+      - uses: actions/checkout@v7.0.1
+
+      - uses: astral-sh/setup-uv@v10.2.0
+
+      - name: Install MLflow CLI
+        run: uv tool install mlflow==3.17.0
+
+      - name: Resolve candidate version
+        id: candidate
+        run: |
+          if [[ -n "${{ inputs.version }}" ]]; then
+            version="${{ inputs.version }}"
+          else
+            # Get the current challenger version
+            version=$(mlflow models get-model-version-by-alias \
+              --name trip-duration --alias challenger \
+              --output json 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin)['version'])")
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Candidate version: $version"
+
+          # Verify the candidate was evaluated by the pipeline (has eval tags)
+          tags=$(mlflow models get-model-version \
+            --name trip-duration --version "$version" \
+            --output json 2>/dev/null | python3 -c "
+          import sys, json
+          mv = json.load(sys.stdin)
+          tags = mv.get('tags', {})
+          print(json.dumps(tags))
+          ")
+          echo "Version tags: $tags"
+
+          # Check that the pipeline evaluated it (mae_min tag exists)
+          has_eval=$(echo "$tags" | python3 -c "
+          import sys, json
+          tags = json.load(sys.stdin)
+          print('yes' if 'mae_min' in tags else 'no')
+          ")
+          if [[ "$has_eval" != "yes" ]]; then
+            echo "::error::Version $version has no evaluation tags — the pipeline hasn't evaluated it"
+            exit 1
+          fi
+          echo "✓ Version $version has been evaluated by the pipeline"
+
+      - name: Record outgoing champion
+        id: outgoing
+        run: |
+          # Try to get the current champion; it may not exist yet
+          old_version=$(mlflow models get-model-version-by-alias \
+            --name trip-duration --alias champion \
+            --output json 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin)['version'])" 2>/dev/null || echo "none")
+          echo "previous=$old_version" >> "$GITHUB_OUTPUT"
+          echo "Outgoing champion: $old_version"
+
+      - name: Promote to champion
+        run: |
+          version="${{ steps.candidate.outputs.version }}"
+          echo "Setting champion alias to version $version"
+          mlflow models set-alias \
+            --name trip-duration \
+            --alias champion \
+            --version "$version"
+          echo "✓ champion alias now points to version $version"
+
+      - name: Reload serving-champion container
+        run: |
+          deploy/web.sh reload champion
+
+      - name: Verify /predict returns champion
+        run: |
+          # Wait a moment for Traefik health check to pick up the champion
+          sleep 5
+          response=$(curl -fsS --retry 10 --retry-delay 3 \
+            -H 'Content-Type: application/json' \
+            http://localhost:80/predict \
+            -d '{"pickup_zone_id": 132, "dropoff_zone_id": 230, "pickup_datetime": "2024-03-08T17:05:00"}')
+          echo "Response: $response"
+
+          alias=$(echo "$response" | python3 -c "import sys,json; print(json.load(sys.stdin)['model']['alias'])")
+          version=$(echo "$response" | python3 -c "import sys,json; print(json.load(sys.stdin)['model']['version'])")
+          echo "Model: alias=$alias version=$version"
+
+          if [[ "$alias" != "champion" ]]; then
+            echo "::error::/predict returned alias=$alias, expected champion"
+            exit 1
+          fi
+          expected="${{ steps.candidate.outputs.version }}"
+          if [[ "$version" != "$expected" ]]; then
+            echo "::error::/predict returned version=$version, expected $expected"
+            exit 1
+          fi
+          echo "✓ /predict returns champion v$version"
+
+      - name: Summary
+        run: |
+          echo "## Promotion Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Model:** trip-duration" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Promoted version:** ${{ steps.candidate.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Previous champion:** ${{ steps.outgoing.outputs.previous }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Method:** POST /reload (zero downtime)" >> "$GITHUB_STEP_SUMMARY"

@@ -33,75 +33,87 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
 
-      - uses: astral-sh/setup-uv@v10.2.0
-
-      - name: Install MLflow CLI
-        run: uv tool install mlflow==3.17.0
-
-      - name: Resolve candidate version
+      - name: Resolve and validate candidate
         id: candidate
         run: |
-          if [[ -n "${{ inputs.version }}" ]]; then
-            version="${{ inputs.version }}"
-          else
-            # Get the current challenger version
-            version=$(mlflow models get-model-version-by-alias \
-              --name trip-duration --alias challenger \
-              --output json 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin)['version'])")
-          fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "Candidate version: $version"
+          python3 - "${{ inputs.version }}" <<'PYEOF'
+          import json, os, sys
+          from urllib.request import urlopen, Request
+          from urllib.error import HTTPError
 
-          # Verify the candidate was evaluated by the pipeline (has eval tags)
-          tags=$(mlflow models get-model-version \
-            --name trip-duration --version "$version" \
-            --output json 2>/dev/null | python3 -c "
-          import sys, json
-          mv = json.load(sys.stdin)
-          tags = mv.get('tags', {})
-          print(json.dumps(tags))
-          ")
-          echo "Version tags: $tags"
+          tracking = os.environ["MLFLOW_TRACKING_URI"].rstrip("/")
+          input_version = sys.argv[1] if len(sys.argv) > 1 else ""
 
-          # Check that the pipeline evaluated it (mae_min tag exists)
-          has_eval=$(echo "$tags" | python3 -c "
-          import sys, json
-          tags = json.load(sys.stdin)
-          print('yes' if 'mae_min' in tags else 'no')
-          ")
-          if [[ "$has_eval" != "yes" ]]; then
-            echo "::error::Version $version has no evaluation tags — the pipeline hasn't evaluated it"
-            exit 1
-          fi
-          echo "✓ Version $version has been evaluated by the pipeline"
+          def api(path):
+              return json.loads(urlopen(Request(f"{tracking}/api/2.0/mlflow/{path}")).read())
+
+          if input_version:
+              version = input_version
+          else:
+              resp = api(f"registered-models/alias?name=trip-duration&alias=challenger")
+              version = str(resp["model_version"]["version"])
+
+          mv = api(f"model-versions/get?name=trip-duration&version={version}")["model_version"]
+          tags = {t["key"]: t["value"] for t in mv.get("tags", [])}
+
+          if "mae_min" not in tags:
+              print(f"::error::Version {version} has no evaluation tags")
+              sys.exit(1)
+
+          print(f"✓ Version {version} evaluated (MAE={tags.get('mae_min')})")
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"version={version}\n")
+              f.write(f"tags={json.dumps(tags)}\n")
+          PYEOF
 
       - name: Record outgoing champion
         id: outgoing
         run: |
-          # Try to get the current champion; it may not exist yet
-          old_version=$(mlflow models get-model-version-by-alias \
-            --name trip-duration --alias champion \
-            --output json 2>/dev/null | python3 -c "import sys,json; print(json.load(sys.stdin)['version'])" 2>/dev/null || echo "none")
-          echo "previous=$old_version" >> "$GITHUB_OUTPUT"
-          echo "Outgoing champion: $old_version"
+          python3 - <<'PYEOF'
+          import json, os
+          from urllib.request import urlopen, Request
+          from urllib.error import HTTPError
 
-      - name: Promote to champion
+          tracking = os.environ["MLFLOW_TRACKING_URI"].rstrip("/")
+          try:
+              resp = json.loads(urlopen(Request(
+                  f"{tracking}/api/2.0/mlflow/registered-models/alias?name=trip-duration&alias=champion"
+              )).read())
+              old = str(resp["model_version"]["version"])
+          except (HTTPError, KeyError):
+              old = "none"
+
+          print(f"Outgoing champion: {old}")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"previous={old}\n")
+          PYEOF
+
+      - name: Set champion alias
         run: |
           version="${{ steps.candidate.outputs.version }}"
           echo "Setting champion alias to version $version"
-          mlflow models set-alias \
-            --name trip-duration \
-            --alias champion \
-            --version "$version"
-          echo "✓ champion alias now points to version $version"
+          python3 - "$version" <<'PYEOF'
+          import json, os, sys
+          from urllib.request import urlopen, Request
+
+          tracking = os.environ["MLFLOW_TRACKING_URI"].rstrip("/")
+          version = sys.argv[1]
+          req = Request(
+              f"{tracking}/api/2.0/mlflow/registered-models/alias",
+              data=json.dumps({"name": "trip-duration", "alias": "champion", "version": version}).encode(),
+              headers={"Content-Type": "application/json"},
+              method="POST"
+          )
+          urlopen(req)
+          print(f"✓ champion alias -> version {version}")
+          PYEOF
 
       - name: Reload serving-champion container
-        run: |
-          deploy/web.sh reload champion
+        run: deploy/web.sh reload champion
 
-      - name: Verify /predict returns champion
+      - name: Verify predict returns champion
         run: |
-          # Wait a moment for Traefik health check to pick up the champion
           sleep 5
           response=$(curl -fsS --retry 10 --retry-delay 3 \
             -H 'Content-Type: application/json' \
@@ -113,11 +125,11 @@ jobs:
           version=$(echo "$response" | python3 -c "import sys,json; print(json.load(sys.stdin)['model']['version'])")
           echo "Model: alias=$alias version=$version"
 
+          expected="${{ steps.candidate.outputs.version }}"
           if [[ "$alias" != "champion" ]]; then
             echo "::error::/predict returned alias=$alias, expected champion"
             exit 1
           fi
-          expected="${{ steps.candidate.outputs.version }}"
           if [[ "$version" != "$expected" ]]; then
             echo "::error::/predict returned version=$version, expected $expected"
             exit 1

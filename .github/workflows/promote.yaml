@@ -126,8 +126,10 @@ jobs:
 
       - name: Summary
         run: |
-          echo "## Promotion Summary" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Model:** trip-duration" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Promoted version:** ${{ steps.candidate.outputs.version }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Previous champion:** ${{ steps.outgoing.outputs.previous }}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Method:** POST /reload (zero downtime)" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "## Promotion Summary"
+            echo "- **Model:** trip-duration"
+            echo "- **Promoted version:** ${{ steps.candidate.outputs.version }}"
+            echo "- **Previous champion:** ${{ steps.outgoing.outputs.previous }}"
+            echo "- **Method:** POST /reload (zero downtime)"
+          } >> "$GITHUB_STEP_SUMMARY"

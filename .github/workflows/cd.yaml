@@ -81,9 +81,11 @@ jobs:
             colour=blue
           fi
           tag="sha-${TARGET_SHA::7}"
-          echo "colour=$colour" >> "$GITHUB_OUTPUT"
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "sha=$TARGET_SHA" >> "$GITHUB_OUTPUT"
+          {
+            echo "colour=$colour"
+            echo "tag=$tag"
+            echo "sha=$TARGET_SHA"
+          } >> "$GITHUB_OUTPUT"
           echo "Deploying $tag to $colour (live is $live)"
 
       - name: Deploy to idle colour
@@ -98,11 +100,13 @@ jobs:
           # Set the colour's tag; leave the other as-is
           live=$(deploy/web.sh live)
           if [[ "$live" == blue ]]; then
-            export BLUE_TAG=$(deploy/web.sh tag blue)
+            BLUE_TAG=$(deploy/web.sh tag blue)
+            export BLUE_TAG
             export GREEN_TAG="$tag"
           elif [[ "$live" == green ]]; then
             export BLUE_TAG="$tag"
-            export GREEN_TAG=$(deploy/web.sh tag green)
+            GREEN_TAG=$(deploy/web.sh tag green)
+            export GREEN_TAG
           else
             # First deploy: both colours get the same tag
             export BLUE_TAG="$tag"
